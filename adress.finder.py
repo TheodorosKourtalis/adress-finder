@@ -1,19 +1,19 @@
 import streamlit as st
-import overpy
 import googlemaps
 import folium
 from streamlit_folium import folium_static
-import json
+import pandas as pd
+import re
 
 # ============================
 # Streamlit Application
 # ============================
 
 def main():
-    st.set_page_config(page_title="📍 OSM Nearby Addresses Visualization", layout="wide")
-    st.title("📍 OSM Nearby Addresses Visualization")
+    st.set_page_config(page_title="📍 Google Places Nearby Addresses Visualization", layout="wide")
+    st.title("📍 Google Places Nearby Addresses Visualization")
     st.markdown("""
-    This application allows you to input an address and visualize it along with nearby addresses from OpenStreetMap on an interactive map.
+    This application allows you to input an address and visualize it along with nearby addresses from Google Places on an interactive map.
     """)
     
     # ============================
@@ -32,6 +32,8 @@ def main():
     # Initialize Google Maps client
     try:
         gmaps_client = googlemaps.Client(key=api_key)
+        # Test the API key by making a simple request
+        gmaps_client.geocode("Test")
     except Exception as e:
         st.sidebar.error(f"Invalid API Key or connection error: {e}")
         st.stop()
@@ -47,8 +49,8 @@ def main():
     # Button to generate map
     if st.sidebar.button("🔍 Generate Map"):
         # Geocode the address
-        st.info("📡 Geocoding the address...")
-        main_coords = geocode_address(address_input, gmaps_client)
+        with st.spinner("📡 Geocoding the address..."):
+            main_coords = geocode_address(address_input, gmaps_client)
         
         if not main_coords:
             st.error("❌ Geocoding failed: Address not found.")
@@ -57,24 +59,22 @@ def main():
         lat, lon = main_coords
         st.success(f"✅ Coordinates: Latitude = {lat}, Longitude = {lon}")
         
-        # Create Overpass query
-        query = create_overpass_query(lat, lon, radius=radius_input)
+        # Extract postcode for more accurate querying
+        postcode = extract_postcode(address_input)
         
-        # Fetch OSM data
-        st.info("🔄 Fetching nearby addresses from OpenStreetMap...")
-        osm_data = fetch_osm_data(query)
+        # Fetch nearby places using Google Places API
+        with st.spinner("🔄 Fetching nearby addresses from Google Places..."):
+            nearby_addresses = fetch_nearby_places(gmaps_client, main_coords, radius_input)
         
-        if not osm_data:
-            st.error("❌ No OSM data retrieved.")
+        if not nearby_addresses:
+            st.error("❌ No nearby addresses found.")
             st.stop()
         
-        # Collect nearby addresses
-        nearby_addresses = osm_data.nodes
         st.success(f"✅ Found {len(nearby_addresses)} nearby addresses.")
         
         # Generate Folium map
-        st.info("🗺️ Generating the map...")
-        folium_map = generate_folium_map(address_input, main_coords, nearby_addresses, radius=radius_input)
+        with st.spinner("🗺️ Generating the map..."):
+            folium_map = generate_folium_map_google_places(address_input, main_coords, nearby_addresses, radius=radius_input)
         
         # Display the map
         st.subheader("🗺️ Map Visualization")
@@ -83,27 +83,7 @@ def main():
         # Optional: Display the list of nearby addresses
         if st.checkbox("📋 Show Nearby Addresses"):
             st.subheader("📌 Nearby Addresses")
-            address_list = []
-            for addr in nearby_addresses:
-                housenumber = addr.tags.get('addr:housenumber', '')
-                street = addr.tags.get('addr:street', '')
-                city = addr.tags.get('addr:city', '')  # Optional
-                postcode = addr.tags.get('addr:postcode', '')  # Optional
-
-                # Combine into a display string
-                if city and postcode:
-                    address_display = f"{housenumber} {street}, {city} {postcode}"
-                elif city:
-                    address_display = f"{housenumber} {street}, {city}"
-                elif postcode:
-                    address_display = f"{housenumber} {street}, {postcode}"
-                else:
-                    address_display = f"{housenumber} {street}"
-                
-                address_list.append(address_display)
-            
-            # Display in a table
-            st.write(pd.DataFrame(address_list, columns=["Nearby Addresses"]))
+            st.write(pd.DataFrame(nearby_addresses, columns=["Nearby Addresses"]))
     
 # ============================
 # Helper Functions
@@ -114,7 +94,7 @@ def geocode_address(address, gmaps_client):
     Geocodes the given address using Google Maps Geocoding API and returns latitude and longitude.
     """
     try:
-        geocode_result = gmaps_client.geocode(address, language='el')  # 'el' for Greek
+        geocode_result = gmaps_client.geocode(address, language='el', components={"country": "GR"})
         if geocode_result:
             location = geocode_result[0]['geometry']['location']
             return (location['lat'], location['lng'])
@@ -124,39 +104,40 @@ def geocode_address(address, gmaps_client):
         st.error(f"Geocoding error: {e}")
         return None
 
-def create_overpass_query(lat, lon, radius=500):
+def extract_postcode(address):
     """
-    Creates an Overpass QL query to fetch OSM nodes with address tags within a specified radius around given coordinates.
+    Extracts the postcode from the address string.
+    Assumes the postcode is the last numeric component in the address.
     """
-    # Use precise filtering to get addresses
-    query = f"""
-    [out:json][timeout:60];
-    (
-      node(around:{radius},{lat},{lon})["addr:housenumber"]["addr:street"];
-    );
-    out body;
-    """
-    return query
-
-def fetch_osm_data(query):
-    """
-    Fetches OSM data using the Overpass API based on the provided query.
-    """
-    api = overpy.Overpass()
-    try:
-        result = api.query(query)
-        return result
-    except overpy.exception.OverpassTooManyRequests:
-        st.error("Error: Too many requests to Overpass API. Please try again later.")
-    except overpy.exception.OverpassGatewayTimeout:
-        st.error("Error: Overpass API gateway timeout. Please try again later.")
-    except Exception as e:
-        st.error(f"An error occurred while fetching OSM data: {e}")
+    match = re.search(r'\b\d{4,5}\b', address)
+    if match:
+        return match.group()
     return None
 
-def generate_folium_map(main_address, main_coords, nearby_addresses, radius=500):
+def fetch_nearby_places(gmaps_client, location, radius=500):
     """
-    Generates a Folium map with the main address and nearby addresses.
+    Fetches nearby addresses using Google Places API's Nearby Search.
+    """
+    try:
+        response = gmaps_client.places_nearby(
+            location=location,
+            radius=radius,
+            type='street_address'
+        )
+        results = response.get('results', [])
+        
+        # Extract formatted addresses
+        addresses = [place.get('vicinity', '') for place in results]
+        # Remove duplicates
+        unique_addresses = list(dict.fromkeys(addresses))
+        return unique_addresses
+    except Exception as e:
+        st.error(f"Error fetching nearby places: {e}")
+        return []
+
+def generate_folium_map_google_places(main_address, main_coords, nearby_addresses, radius=500):
+    """
+    Generates a Folium map with the main address and nearby addresses fetched from Google Places.
     """
     lat, lon = main_coords
     
@@ -166,7 +147,7 @@ def generate_folium_map(main_address, main_coords, nearby_addresses, radius=500)
             location=main_coords,
             zoom_start=17,
             tiles='Stamen Toner',
-            attr='Map tiles by Stamen Design, under CC BY 3.0. Data by OpenStreetMap, under ODbL.'
+            attr='Map tiles by Stamen Design, under CC BY 3.0. Data by Google Places.'
         )
     except ValueError as ve:
         st.warning(f"Tile attribution error: {ve}. Switching to 'OpenStreetMap' tiles.")
@@ -193,27 +174,14 @@ def generate_folium_map(main_address, main_coords, nearby_addresses, radius=500)
     
     # Add nearby addresses markers (Blue)
     for address in nearby_addresses:
-        # Extract address details
-        housenumber = address.tags.get('addr:housenumber', '')
-        street = address.tags.get('addr:street', '')
-        city = address.tags.get('addr:city', '')  # Optional
-        postcode = address.tags.get('addr:postcode', '')  # Optional
-
-        # Combine into a display string
-        if city and postcode:
-            address_display = f"{housenumber} {street}, {city} {postcode}"
-        elif city:
-            address_display = f"{housenumber} {street}, {city}"
-        elif postcode:
-            address_display = f"{housenumber} {street}, {postcode}"
-        else:
-            address_display = f"{housenumber} {street}"
-        
-        folium.Marker(
-            location=(address.lat, address.lon),
-            popup=address_display,
-            icon=folium.Icon(color='blue', icon='home')
-        ).add_to(marker_cluster)
+        # Geocode each nearby address to get coordinates
+        coords = geocode_address(address, gmaps_client=gmaps_client)
+        if coords:
+            folium.Marker(
+                location=coords,
+                popup=address,
+                icon=folium.Icon(color='blue', icon='home')
+            ).add_to(marker_cluster)
     
     return m
 
@@ -222,5 +190,4 @@ def generate_folium_map(main_address, main_coords, nearby_addresses, radius=500)
 # ============================
 
 if __name__ == "__main__":
-    import pandas as pd  # Import here to prevent errors if not used
     main()
