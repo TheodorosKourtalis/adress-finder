@@ -10,7 +10,7 @@ import json
 # ============================
 
 # Replace 'YOUR_GOOGLE_MAPS_API_KEY' with your actual Google Maps API key
-GOOGLE_MAPS_API_KEY = 'YOUR_GOOGLE_MAPS_API_KEY'
+GOOGLE_MAPS_API_KEY = 'AIzaSyAq6ncvHE2yo34zl5W2u72ZQRAG3t3uSJc'
 
 # Initialize the Google Maps client
 gmaps_client = googlemaps.Client(key=GOOGLE_MAPS_API_KEY)
