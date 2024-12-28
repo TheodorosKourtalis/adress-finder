@@ -1,3 +1,4 @@
 overpy
 googlemaps
 folium
+streamlit_folium
