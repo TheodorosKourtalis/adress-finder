@@ -114,25 +114,37 @@ def extract_postcode(address):
         return match.group()
     return None
 
-def fetch_nearby_places(gmaps_client, location, radius=500):
+def fetch_osm_addresses_overpy(api, lat, lon, radius=500):
     """
-    Fetches nearby addresses using Google Places API's Nearby Search.
+    Fetches nearby addresses from OSM using Overpy.
+    """
+    query = f"""
+    [out:json][timeout:60];
+    (
+      node(around:{radius},{lat},{lon})["addr:housenumber"]["addr:street"];
+    );
+    out body;
     """
     try:
-        response = gmaps_client.places_nearby(
-            location=location,
-            radius=radius,
-            type='street_address'
-        )
-        results = response.get('results', [])
-        
-        # Extract formatted addresses
-        addresses = [place.get('vicinity', '') for place in results]
-        # Remove duplicates
-        unique_addresses = list(dict.fromkeys(addresses))
-        return unique_addresses
+        result = api.query(query)
+        addresses = []
+        for node in result.nodes:
+            housenumber = node.tags.get('addr:housenumber', '')
+            street = node.tags.get('addr:street', '')
+            city = node.tags.get('addr:city', '')  # Optional
+            postcode = node.tags.get('addr:postcode', '')  # Optional
+            if city and postcode:
+                address = f"{housenumber} {street}, {city} {postcode}"
+            elif city:
+                address = f"{housenumber} {street}, {city}"
+            elif postcode:
+                address = f"{housenumber} {street}, {postcode}"
+            else:
+                address = f"{housenumber} {street}"
+            addresses.append(address)
+        return list(set(addresses))  # Remove duplicates
     except Exception as e:
-        st.error(f"Error fetching nearby places: {e}")
+        st.error(f"Overpass API error: {e}")
         return []
 
 def generate_folium_map_google_places(main_address, main_coords, nearby_addresses, radius=500):
